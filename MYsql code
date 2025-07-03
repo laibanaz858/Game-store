@@ -1,0 +1,197 @@
+-- Step 1: Create and Use the Database
+CREATE DATABASE IF NOT EXISTS GameStore;
+USE GameStore;
+
+-- Step 2: Drop Tables (Safe even if they don’t exist)
+DROP TABLE IF EXISTS OrderDetails;
+DROP TABLE IF EXISTS Payments;
+DROP TABLE IF EXISTS Inventory;
+DROP TABLE IF EXISTS Orders;
+DROP TABLE IF EXISTS Cart;
+DROP TABLE IF EXISTS Games;
+DROP TABLE IF EXISTS Users;
+
+-- Step 3: Create Tables
+
+CREATE TABLE Users (
+    user_id INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(50) NOT NULL,
+    email VARCHAR(100) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,
+    role VARCHAR(10) NOT NULL,
+    CHECK (role IN ('Customer', 'Admin'))
+);
+
+CREATE TABLE Games (
+    game_id INT AUTO_INCREMENT PRIMARY KEY,
+    title VARCHAR(100) NOT NULL,
+    description TEXT,
+    price DECIMAL(10, 2) NOT NULL,
+    genre VARCHAR(50),
+    platform VARCHAR(50),
+    image_path VARCHAR(255) DEFAULT 'images/default-game.jpg'
+);
+
+CREATE TABLE Orders (
+    order_id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT,
+    order_date DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    total_amount DECIMAL(10, 2) NOT NULL,
+    status VARCHAR(20) DEFAULT 'Pending',
+    CHECK (status IN ('Pending', 'Shipped', 'Delivered', 'Cancelled')),
+    FOREIGN KEY (user_id) REFERENCES Users(user_id)
+);
+
+CREATE TABLE Payments (
+    payment_id INT AUTO_INCREMENT PRIMARY KEY,
+    order_id INT,
+    payment_date DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    payment_status VARCHAR(20) DEFAULT 'Pending',
+    payment_method VARCHAR(20) NOT NULL,
+    CHECK (payment_status IN ('Success', 'Failed', 'Pending')),
+    CHECK (payment_method IN ('Credit Card', 'Debit Card', 'PayPal', 'Bank Transfer')),
+    FOREIGN KEY (order_id) REFERENCES Orders(order_id)
+);
+
+CREATE TABLE Inventory (
+    game_id INT PRIMARY KEY,
+    stock_quantity INT NOT NULL,
+    FOREIGN KEY (game_id) REFERENCES Games(game_id)
+);
+
+CREATE TABLE OrderDetails (
+    order_id INT,
+    game_id INT,
+    quantity INT NOT NULL,
+    price DECIMAL(10, 2) NOT NULL,
+    PRIMARY KEY (order_id, game_id),
+    FOREIGN KEY (order_id) REFERENCES Orders(order_id),
+    FOREIGN KEY (game_id) REFERENCES Games(game_id)
+);
+
+CREATE TABLE Cart (
+    cart_id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    game_id INT NOT NULL,
+    quantity INT NOT NULL DEFAULT 1,
+    added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (user_id, game_id),
+    FOREIGN KEY (user_id) REFERENCES Users(user_id),
+    FOREIGN KEY (game_id) REFERENCES Games(game_id)
+);
+
+-- Step 4: Views
+
+CREATE OR REPLACE VIEW OrderSummary AS
+SELECT 
+    O.order_id, 
+    U.username, 
+    O.order_date, 
+    O.total_amount, 
+    O.status AS order_status, 
+    P.payment_status, 
+    P.payment_method
+FROM Orders O
+JOIN Users U ON O.user_id = U.user_id
+JOIN Payments P ON O.order_id = P.order_id;
+
+CREATE OR REPLACE VIEW InventoryStatus AS
+SELECT 
+    G.title AS game_title, 
+    I.stock_quantity, 
+    G.price
+FROM Inventory I
+JOIN Games G ON I.game_id = G.game_id;
+
+-- Step 5: Triggers
+
+DELIMITER //
+
+CREATE TRIGGER prevent_negative_game_price
+BEFORE INSERT ON Games
+FOR EACH ROW
+BEGIN
+    IF NEW.price < 0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Game price cannot be negative.';
+    END IF;
+END//
+
+CREATE TRIGGER validate_payment_status
+BEFORE INSERT ON Payments
+FOR EACH ROW
+BEGIN
+    IF NEW.payment_status = 'Failed' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Payment failed. Please try again.';
+    END IF;
+END//
+
+CREATE TRIGGER update_inventory_after_order
+AFTER INSERT ON OrderDetails
+FOR EACH ROW
+BEGIN
+    UPDATE Inventory
+    SET stock_quantity = stock_quantity - NEW.quantity
+    WHERE game_id = NEW.game_id;
+END//
+
+CREATE TRIGGER update_order_status_after_payment
+AFTER INSERT ON Payments
+FOR EACH ROW
+BEGIN
+    IF NEW.payment_status = 'Success' THEN
+        UPDATE Orders
+        SET status = 'Shipped'
+        WHERE order_id = NEW.order_id;
+    ELSE
+        UPDATE Orders
+        SET status = 'Cancelled'
+        WHERE order_id = NEW.order_id;
+    END IF;
+END//
+
+DELIMITER ;
+
+-- Step 6: Stored Procedure
+
+DELIMITER //
+
+-- Drop existing procedure if it exists
+DROP PROCEDURE IF EXISTS GetGameSales;
+
+-- Create new procedure
+CREATE PROCEDURE GetGameSales (IN game_title VARCHAR(100))
+BEGIN
+    SELECT  
+        G.title,  
+        SUM(OD.quantity) AS total_sales,  
+        SUM(OD.price * OD.quantity) AS total_revenue  
+    FROM OrderDetails OD  
+    JOIN Games G ON OD.game_id = G.game_id  
+    WHERE G.title = game_title  
+    GROUP BY G.title;  
+END//
+
+DELIMITER ;
+
+-- Step 7: Insert Sample Data
+
+INSERT INTO Games (title, description, price, genre, platform, image_path)
+VALUES
+('Alan Wake 2', 'A psychological horror adventure game where you unravel mysteries in a haunting town.', 59.99, 'Horror', 'PC', 'images/Alan.jpg'),
+('Indiana Jones', 'An action-adventure game full of puzzles and exploration starring the iconic archaeologist.', 39.99, 'Adventure', 'Console', 'images/Indiana.jpg'),
+('Astro Bot', 'A 3D platformer where you explore charming worlds and rescue your lost crew.', 29.99, 'Platformer', 'Console', 'images/Astro.jpg'),
+('Horizon Forbidden West', 'An open-world action RPG set in a post-apocalyptic world with mechanical beasts.', 49.99, 'Action RPG', 'Console', 'images/horizon.jpg'),
+('Minecraft', 'A sandbox game about placing blocks and going on adventures in procedurally generated worlds.', 19.99, 'Sandbox', 'Multiplatform', 'images/minecraft.jpg'),
+('Ghostwire Tokyo', 'An action-adventure game in a supernatural Tokyo filled with spirits and strange powers.', 65.00, 'Action', 'PC', 'images/gostwire.jpg'),
+('Mario + Rabbids Sparks Of Hope', 'A turn-based strategy game with quirky characters and cosmic adventures.', 34.00, 'Strategy', 'Multiplatform', 'images/SPARK.jpg'),
+('WWE 2K24', 'Professional wrestling simulation game featuring current and legendary WWE superstars.', 76.99, 'Sports', 'Multiplatform', 'images/ww2.jpg'),
+('Mario & Luigi Brothership', 'A role-playing game with humorous storylines and dynamic turn-based battles.', 85.80, 'RPG', 'Console', 'images/Mario.jpg'),
+('Ratchet & Clank: Rift Apart', 'A sci-fi platform shooter with interdimensional travel and explosive combat.', 34.89, 'Platformer', 'Multiplatform', 'images/ratchared.jpg'),
+('Need For Speed Unbound', 'A high-stakes street racing game with stylized graphics and deep car customization.', 56.08, 'Racing', 'PC', 'images/unbound.jpg'),
+('Marvel’s Guardians of the Galaxy', 'A story-driven action-adventure game starring the Guardians on a galaxy-saving mission.', 85.60, 'Action', 'Multiplatform', 'images/GUR.jpg');
+
+
+-- Sample inventory for each game
+INSERT INTO Inventory (game_id, stock_quantity)
+SELECT game_id, FLOOR(RAND() * 100) + 1 FROM Games;
+ALTER TABLE Payments ADD COLUMN amount DECIMAL(10, 2);
